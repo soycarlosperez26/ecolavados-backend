@@ -1,0 +1,1123 @@
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  ECOLAVADOS / ARCOI — Prisma Schema v1.0                        ║
+// ║  Basado en Brief Técnico + Documento Maestro                    ║
+// ║  Multi-tenant fiscal | Estado compuesto | Eventos canónicos     ║
+// ╚══════════════════════════════════════════════════════════════════╝
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 0 — MULTI-TENANT FISCAL
+// ─────────────────────────────────────────────────────────────────────
+
+model Company {
+  id        String   @id @default(cuid())
+  nit       String   @unique
+  name      String
+  shortName String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  clients         Client[]
+  invoices        Invoice[]
+  users           UserCompanyRole[]
+  washServices    WashService[]
+  tankAssignments IsoTankAssignment[]
+
+  @@map("companies")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  supabaseUid  String?  @unique
+  email        String   @unique
+  password     String?
+  fullName     String
+  phone        String?
+  isActive     Boolean  @default(true)
+  refreshToken String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  companyRoles              UserCompanyRole[]
+  inspections               Inspection[]
+  findings                  Finding[]         @relation("FindingInspector")
+  evidences                 Evidence[]
+  tankMovements             TankMovement[]
+  agentActions              AgentAction[]     @relation("ActionApprovedBy")
+  questions                 SystemQuestion[]  @relation("QuestionAssignedTo")
+  aiInspectionRunsRequested AiInspectionRun[] @relation("AiInspectionRequestedBy")
+
+  @@map("users")
+}
+
+model UserCompanyRole {
+  id        String   @id @default(cuid())
+  userId    String
+  companyId String
+  role      UserRole
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([userId, companyId, role])
+  @@map("user_company_roles")
+}
+
+enum UserRole {
+  ADMIN
+  COORDINATOR
+  OPERATOR
+  SUPERVISOR
+  INSPECTOR
+  COMMERCIAL
+  HSEQ
+  DRIVER
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 1 — MAESTROS OPERATIVOS (compartidos entre empresas)
+// ─────────────────────────────────────────────────────────────────────
+
+model Client {
+  id        String   @id @default(cuid())
+  name      String
+  shortName String?
+  taxId     String?  @unique
+  email     String?
+  phone     String?
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  slaMaxDays     Int     @default(5)
+  billingRules   Json?
+  requiresMsds   Boolean @default(true)
+  requiresHazmat Boolean @default(false)
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  tanks      IsoTank[]
+  washOrders WashOrder[]
+  requests   ClientRequest[]
+  invoices   Invoice[]
+
+  @@map("clients")
+}
+
+model Product {
+  id           String   @id @default(cuid())
+  name         String
+  unNumber     String?
+  imdgClass    String?
+  packingGroup String?
+  msdsUrl      String?
+  isHazmat     Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  lastLoads IsoTankLastLoad[]
+
+  @@map("products")
+}
+
+model ServiceType {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  unitPrice   Decimal? @db.Decimal(12, 2)
+  currency    String   @default("COP")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  washServices WashService[]
+
+  @@map("service_types")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 2 — ISOTANQUE Y ESTADO COMPUESTO (4 dimensiones paralelas)
+// ─────────────────────────────────────────────────────────────────────
+
+model IsoTank {
+  id           String   @id @default(cuid())
+  serialNumber String   @unique
+  isoCode      String?
+  owner        String?
+  manufacturer String?
+  yearBuilt    Int?
+  capacityL    Int?
+  tare         Decimal? @db.Decimal(8, 2)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // ── ESTADO COMPUESTO ─────────────────────────────────────────────
+  internalStatus          InternalStatus        @default(DIRTY)
+  externalStatus          ExternalStatus        @default(NOT_EVALUATED)
+  operationalTest         OperationalTestStatus @default(PENDING)
+  regulatoryTest          RegulatoryTestStatus  @default(VIGENTE)
+  regulatoryTestExpiresAt DateTime?
+  nextImdgTestType        ImdgTestType?
+
+  // Disponibilidad derivada (calculada por Agente Programador)
+  isAvailableForDelivery Boolean  @default(false)
+  unavailabilityReasons  String[]
+
+  // Posición
+  currentBayId        String?
+  currentBay          Bay?    @relation(fields: [currentBayId], references: [id])
+  currentLocationNote String?
+
+  clientId String?
+  client   Client? @relation(fields: [clientId], references: [id])
+
+  lastLoad         IsoTankLastLoad?
+  washOrders       WashOrder[]
+  findings         Finding[]
+  repairs          Repair[]
+  assignments      IsoTankAssignment[]
+  movements        TankMovement[]
+  imdgTests        ImdgTest[]
+  operationalTests PneumaticTest[]
+  events           CanonicalEvent[]
+
+  @@map("iso_tanks")
+}
+
+enum InternalStatus {
+  DIRTY
+  CLEANING
+  WAITING_QI
+  CLEAN_WITH_STAINS
+  CLEAN
+  AVAILABLE_INTERNAL
+}
+
+enum ExternalStatus {
+  NOT_EVALUATED
+  DAMAGE_DETECTED_EIR
+  DAMAGE_DETECTED_INSPECTION
+  REQUEST_PENDING
+  REQUEST_APPROVED
+  REQUEST_REJECTED
+  IN_REPAIR
+  AVAILABLE_EXTERNAL
+}
+
+enum OperationalTestStatus {
+  PENDING
+  IN_PROGRESS
+  WAITING_INSPECTION
+  PASSED
+  FAILED
+  NOT_REQUIRED
+}
+
+enum RegulatoryTestStatus {
+  VIGENTE
+  EXPIRING_SOON
+  EXPIRED
+  NOT_REQUIRED
+  TEST_SCHEDULED
+  COMPLETED
+}
+
+enum ImdgTestType {
+  TEST_2_5_YEARS
+  TEST_5_YEARS
+}
+
+model IsoTankLastLoad {
+  id        String   @id @default(cuid())
+  tankId    String   @unique
+  tank      IsoTank  @relation(fields: [tankId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  loadedAt  DateTime
+  notes     String?
+
+  @@map("iso_tank_last_loads")
+}
+
+model ImdgTest {
+  id          String       @id @default(cuid())
+  tankId      String
+  tank        IsoTank      @relation(fields: [tankId], references: [id])
+  testType    ImdgTestType
+  scheduledAt DateTime?
+  performedAt DateTime?
+  expiresAt   DateTime?
+  result      TestResult?
+  certUrl     String?
+  inspector   String?
+  notes       String?
+  createdAt   DateTime     @default(now())
+
+  @@map("imdg_tests")
+}
+
+model PneumaticTest {
+  id          String      @id @default(cuid())
+  tankId      String
+  tank        IsoTank     @relation(fields: [tankId], references: [id])
+  washOrderId String?
+  washOrder   WashOrder?  @relation(fields: [washOrderId], references: [id])
+  pressure    Decimal?    @db.Decimal(6, 2)
+  performedAt DateTime?
+  result      TestResult?
+  evidenceUrl String?
+  operatorId  String?
+  notes       String?
+  createdAt   DateTime    @default(now())
+
+  @@map("pneumatic_tests")
+}
+
+enum TestResult {
+  PASSED
+  FAILED
+  INCONCLUSIVE
+}
+
+model Bay {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  type      BayType
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  tanks       IsoTank[]
+  assignments IsoTankAssignment[]
+
+  @@map("bays")
+}
+
+enum BayType {
+  WASH
+  REPAIR
+  STORAGE
+  INSPECTION
+  DISPATCH
+}
+
+model IsoTankAssignment {
+  id         String    @id @default(cuid())
+  tankId     String
+  tank       IsoTank   @relation(fields: [tankId], references: [id])
+  companyId  String
+  company    Company   @relation(fields: [companyId], references: [id])
+  bayId      String?
+  bay        Bay?      @relation(fields: [bayId], references: [id])
+  assignedAt DateTime  @default(now())
+  releasedAt DateTime?
+  reason     String?
+
+  @@map("iso_tank_assignments")
+}
+
+model TankMovement {
+  id           String   @id @default(cuid())
+  tankId       String
+  tank         IsoTank  @relation(fields: [tankId], references: [id])
+  fromLocation String?
+  toLocation   String
+  movedAt      DateTime @default(now())
+  movedById    String
+  movedBy      User     @relation(fields: [movedById], references: [id])
+  reason       String?
+  washOrderId  String?
+
+  @@map("tank_movements")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 3 — ORDEN DE SERVICIO
+// ─────────────────────────────────────────────────────────────────────
+
+model WashOrder {
+  id          String          @id @default(cuid())
+  orderNumber String          @unique
+  companyId   String
+  status      WashOrderStatus @default(PENDING)
+  priority    Priority        @default(NORMAL)
+
+  tankId   String
+  tank     IsoTank @relation(fields: [tankId], references: [id])
+  clientId String
+  client   Client  @relation(fields: [clientId], references: [id])
+
+  description     String?
+  notes           String?
+  scheduledAt     DateTime?
+  slaDeadline     DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  rejectedAt      DateTime?
+  rejectionReason String?
+  cycleTimeHours  Decimal?  @db.Decimal(6, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  services         WashService[]
+  inspections      Inspection[]
+  findings         Finding[]
+  repairs          Repair[]
+  evidences        Evidence[]
+  pneumaticTests   PneumaticTest[]
+  assignments      WashOrderAssignment[]
+  events           CanonicalEvent[]
+  aiInspectionRuns AiInspectionRun[]
+  invoiceItems     InvoiceItem[]
+  clientRequestId  String?
+  clientRequest    ClientRequest?        @relation(fields: [clientRequestId], references: [id])
+
+  @@map("wash_orders")
+}
+
+enum WashOrderStatus {
+  PENDING
+  PENDING_APPROVAL
+  REJECTED_PENDING_INFO
+  APPROVED
+  SCHEDULED
+  ASSIGNED
+  IN_PROGRESS
+  PREPARATION
+  CLEANING
+  DRYING
+  PRE_INSPECTION
+  IA_REVIEW
+  PENDING_CERTIFICATION
+  PNEUMATIC_TEST
+  WAITING_QI
+  COMPLETED
+  BLOCKED
+  REJECTED
+  CANCELLED
+}
+
+enum Priority {
+  URGENT
+  HIGH
+  NORMAL
+  LOW
+}
+
+model WashOrderAssignment {
+  id          String         @id @default(cuid())
+  washOrderId String
+  washOrder   WashOrder      @relation(fields: [washOrderId], references: [id])
+  userId      String
+  role        AssignmentRole
+  assignedAt  DateTime       @default(now())
+  releasedAt  DateTime?
+
+  @@unique([washOrderId, userId, role])
+  @@map("wash_order_assignments")
+}
+
+enum AssignmentRole {
+  OPERATOR
+  SUPERVISOR
+  INSPECTOR
+  DRIVER
+}
+
+model WashService {
+  id            String      @id @default(cuid())
+  washOrderId   String
+  washOrder     WashOrder   @relation(fields: [washOrderId], references: [id])
+  serviceTypeId String
+  serviceType   ServiceType @relation(fields: [serviceTypeId], references: [id])
+  companyId     String
+  company       Company     @relation(fields: [companyId], references: [id])
+  quantity      Decimal     @default(1) @db.Decimal(8, 2)
+  unitPrice     Decimal     @db.Decimal(12, 2)
+  totalPrice    Decimal     @db.Decimal(12, 2)
+  currency      String      @default("COP")
+  isBillable    Boolean     @default(true)
+  isBilled      Boolean     @default(false)
+  notes         String?
+  performedAt   DateTime?
+  createdAt     DateTime    @default(now())
+
+  invoiceItem InvoiceItem?
+
+  @@map("wash_services")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 4 — INSPECCIONES, HALLAZGOS (EFTCO/ITCO) Y REPARACIONES
+// ─────────────────────────────────────────────────────────────────────
+
+model Inspection {
+  id            String            @id @default(cuid())
+  type          InspectionType
+  tankId        String
+  washOrderId   String?
+  washOrder     WashOrder?        @relation(fields: [washOrderId], references: [id])
+  inspectorId   String
+  inspector     User              @relation(fields: [inspectorId], references: [id])
+  status        InspectionStatus  @default(IN_PROGRESS)
+  performedAt   DateTime?
+  completedAt   DateTime?
+  overallResult InspectionResult?
+  notes         String?
+  signatureUrl  String?
+  createdAt     DateTime          @default(now())
+
+  zones    InspectionZone[]
+  findings Finding[]
+  aiRuns   AiInspectionRun[]
+
+  @@map("inspections")
+}
+
+enum InspectionType {
+  EIR
+  INTERNAL
+  PRE_DISPATCH
+  PERIODIC
+  IMDG
+}
+
+enum InspectionStatus {
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum InspectionResult {
+  PASS
+  PASS_WITH_OBSERVATIONS
+  FAIL
+}
+
+// 15 zonas ITCO TG00 ACC 2017
+model InspectionZone {
+  id           String     @id @default(cuid())
+  inspectionId String
+  inspection   Inspection @relation(fields: [inspectionId], references: [id])
+  itcoZoneCode String // "Z01"..."Z15"
+  itcoZoneName String
+  result       ZoneResult @default(NOT_INSPECTED)
+  measurements Json?
+  notes        String?
+
+  findings Finding[]
+
+  @@map("inspection_zones")
+}
+
+enum ZoneResult {
+  NOT_INSPECTED
+  ACCEPTABLE
+  OBSERVATIONS
+  NOT_ACCEPTABLE
+}
+
+// Hallazgo — EFTCO 2021 Rev 31 (24 códigos daño)
+model Finding {
+  id           String          @id @default(cuid())
+  tankId       String
+  tank         IsoTank         @relation(fields: [tankId], references: [id])
+  washOrderId  String?
+  washOrder    WashOrder?      @relation(fields: [washOrderId], references: [id])
+  inspectionId String?
+  inspection   Inspection?     @relation(fields: [inspectionId], references: [id])
+  zoneId       String?
+  zone         InspectionZone? @relation(fields: [zoneId], references: [id])
+  inspectorId  String
+  inspector    User            @relation("FindingInspector", fields: [inspectorId], references: [id])
+
+  itcoZoneCode    String
+  eftcoDamageCode String // EFTCO daño ej: "D01"
+  eftcoDamageName String
+  location        String
+  severity        FindingSeverity
+  status          FindingStatus   @default(OPEN)
+
+  measurementMm Decimal? @db.Decimal(8, 2)
+  itcoThreshold Decimal? @db.Decimal(8, 2)
+  exceedsFactor Decimal? @db.Decimal(4, 2)
+  description   String?
+
+  detectedAt DateTime  @default(now())
+  resolvedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  evidences      Evidence[]
+  repairs        Repair[]
+  clientRequests ClientRequest[]
+
+  @@map("findings")
+}
+
+enum FindingSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FindingStatus {
+  OPEN
+  REQUEST_SENT
+  AWAITING_APPROVAL
+  APPROVED
+  REJECTED_BY_CUSTOMER
+  IN_REPAIR
+  CLOSED
+  DEFERRED
+}
+
+// Reparación — EFTCO reparación (30+ códigos, matriz daño↔reparación)
+model Repair {
+  id          String     @id @default(cuid())
+  tankId      String
+  tank        IsoTank    @relation(fields: [tankId], references: [id])
+  findingId   String
+  finding     Finding    @relation(fields: [findingId], references: [id])
+  washOrderId String?
+  washOrder   WashOrder? @relation(fields: [washOrderId], references: [id])
+
+  eftcoRepairCode String
+  eftcoRepairName String
+  description     String?
+  status          RepairStatus @default(PENDING)
+  estimatedCost   Decimal?     @db.Decimal(12, 2)
+  currency        String       @default("COP")
+  actualCost      Decimal?     @db.Decimal(12, 2)
+
+  scheduledAt   DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  verifiedAt    DateTime?
+  performedById String?
+
+  evidences    Evidence[]
+  invoiceItems InvoiceItem[]
+
+  @@map("repairs")
+}
+
+enum RepairStatus {
+  PENDING
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  VERIFIED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 5 — EVIDENCIA DIGITAL OBLIGATORIA (P6 — inmutable)
+// ─────────────────────────────────────────────────────────────────────
+
+model Evidence {
+  id            String       @id @default(cuid())
+  type          EvidenceType
+  fileUrl       String
+  fileKey       String
+  mimeType      String?
+  fileSizeBytes Int?
+  hash          String? // SHA-256 para integridad
+
+  washOrderId  String?
+  washOrder    WashOrder? @relation(fields: [washOrderId], references: [id])
+  findingId    String?
+  finding      Finding?   @relation(fields: [findingId], references: [id])
+  repairId     String?
+  repair       Repair?    @relation(fields: [repairId], references: [id])
+  inspectionId String?
+
+  uploadedById String
+  uploadedBy   User      @relation(fields: [uploadedById], references: [id])
+  comment      String?
+  takenAt      DateTime?
+  geoLat       Decimal?  @db.Decimal(10, 7)
+  geoLon       Decimal?  @db.Decimal(10, 7)
+  isImmutable  Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+
+  @@map("evidences")
+}
+
+enum EvidenceType {
+  PRE_WASH
+  DURING_WASH
+  POST_WASH
+  FINDING_PHOTO
+  REPAIR_BEFORE
+  REPAIR_AFTER
+  SEAL_PHOTO
+  PNEUMATIC_TEST
+  DOCUMENT_SCAN
+  SIGNATURE
+  OTHER
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 6 — REQUESTS AL CLIENTE
+// ─────────────────────────────────────────────────────────────────────
+
+model ClientRequest {
+  id            String        @id @default(cuid())
+  requestNumber String        @unique
+  clientId      String
+  client        Client        @relation(fields: [clientId], references: [id])
+  type          RequestType
+  status        RequestStatus @default(DRAFT)
+  subject       String
+  description   String?
+  totalAmount   Decimal?      @db.Decimal(12, 2)
+  currency      String        @default("COP")
+
+  sentAt           DateTime?
+  responseDeadline DateTime?
+  respondedAt      DateTime?
+  responseNotes    String?
+  signatureUrl     String?
+  signedAt         DateTime?
+  signedByName     String?
+
+  items      ClientRequestItem[]
+  washOrders WashOrder[]
+  findings   Finding[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("client_requests")
+}
+
+model ClientRequestItem {
+  id              String        @id @default(cuid())
+  requestId       String
+  request         ClientRequest @relation(fields: [requestId], references: [id])
+  description     String
+  eftcoRepairCode String?
+  quantity        Decimal       @default(1) @db.Decimal(8, 2)
+  unitPrice       Decimal       @db.Decimal(12, 2)
+  totalPrice      Decimal       @db.Decimal(12, 2)
+  isApproved      Boolean?
+  rejectionReason String?
+
+  @@map("client_request_items")
+}
+
+enum RequestType {
+  REPAIR_APPROVAL
+  ADDITIONAL_SERVICE
+  INFORMATION
+  COMPLAINT
+}
+
+enum RequestStatus {
+  DRAFT
+  SENT
+  AWAITING_RESPONSE
+  PARTIALLY_APPROVED
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 7 — FACTURACIÓN
+// ─────────────────────────────────────────────────────────────────────
+
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  companyId     String
+  company       Company       @relation(fields: [companyId], references: [id])
+  clientId      String
+  client        Client        @relation(fields: [clientId], references: [id])
+  status        InvoiceStatus @default(DRAFT)
+  type          InvoiceType   @default(PREFACTURA)
+  subtotal      Decimal       @db.Decimal(14, 2)
+  taxAmount     Decimal       @default(0) @db.Decimal(14, 2)
+  totalAmount   Decimal       @db.Decimal(14, 2)
+  currency      String        @default("COP")
+
+  contapymeId       String?
+  contapymeSyncedAt DateTime?
+  contapymeError    String?
+
+  issuedAt DateTime?
+  dueAt    DateTime?
+  paidAt   DateTime?
+
+  items     InvoiceItem[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id])
+  description String
+  quantity    Decimal @db.Decimal(8, 2)
+  unitPrice   Decimal @db.Decimal(12, 2)
+  totalPrice  Decimal @db.Decimal(12, 2)
+
+  washServiceId String?      @unique
+  washService   WashService? @relation(fields: [washServiceId], references: [id])
+  repairId      String?
+  repair        Repair?      @relation(fields: [repairId], references: [id])
+  washOrderId   String?
+  washOrder     WashOrder?   @relation(fields: [washOrderId], references: [id])
+
+  @@map("invoice_items")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PREFACTURA
+  APPROVED
+  SENT
+  PAID
+  CANCELLED
+  DISPUTED
+}
+
+enum InvoiceType {
+  PREFACTURA
+  INVOICE
+  CREDIT_NOTE
+  DEBIT_NOTE
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 8 — CUMPLIMIENTO BASC / ISO / IMDG
+// ─────────────────────────────────────────────────────────────────────
+
+model Driver {
+  id               String    @id @default(cuid())
+  fullName         String
+  documentType     String    @default("CC")
+  documentNumber   String    @unique
+  licenseNumber    String?
+  licenseCategory  String?
+  licenseExpiresAt DateTime?
+  phone            String?
+  isActive         Boolean   @default(true)
+
+  bascVerified   Boolean    @default(false)
+  bascVerifiedAt DateTime?
+  bascStatus     BascStatus @default(PENDING)
+  bascCheckUrl   String?
+
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  transports Transport[]
+
+  @@map("drivers")
+}
+
+enum BascStatus {
+  PENDING
+  CLEAR
+  FLAGGED
+  BLOCKED
+}
+
+model Transport {
+  id          String          @id @default(cuid())
+  type        TransportType
+  plateNumber String
+  driverId    String?
+  driver      Driver?         @relation(fields: [driverId], references: [id])
+  tankId      String?
+  clientId    String?
+  companyId   String?
+  status      TransportStatus @default(PENDING)
+
+  eirInspectionId String?
+  eirCompletedAt  DateTime?
+  scheduledAt     DateTime?
+  arrivedAt       DateTime?
+  departedAt      DateTime?
+  notes           String?
+  createdAt       DateTime  @default(now())
+
+  @@map("transports")
+}
+
+enum TransportType {
+  ENTRY
+  EXIT
+}
+
+enum TransportStatus {
+  PENDING
+  ARRIVED
+  PROCESSING
+  CLEARED
+  BLOCKED
+  DEPARTED
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 9 — EVENTOS CANÓNICOS (P5 — columna vertebral, Outbox pattern)
+// ─────────────────────────────────────────────────────────────────────
+
+model CanonicalEvent {
+  id            String    @id @default(cuid())
+  type          EventType
+  aggregateId   String
+  aggregateType String
+  payload       Json
+  metadata      Json?
+
+  tankId             String?
+  tank               IsoTank?   @relation(fields: [tankId], references: [id])
+  washOrderId        String?
+  washOrder          WashOrder? @relation(fields: [washOrderId], references: [id])
+  triggeredByUserId  String?
+  triggeredByAgentId String?
+
+  publishedAt  DateTime?
+  publishError String?
+  retryCount   Int       @default(0)
+
+  occurredAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([type])
+  @@index([aggregateId])
+  @@index([occurredAt])
+  @@index([publishedAt])
+  @@map("canonical_events")
+}
+
+enum EventType {
+  TANK_ARRIVED
+  TANK_ENTERED_BAY
+  TANK_WASH_STARTED
+  TANK_WASH_COMPLETED
+  TANK_PNEUMATIC_TEST_STARTED
+  TANK_PNEUMATIC_TEST_PASSED
+  TANK_PNEUMATIC_TEST_FAILED
+  TANK_QI_INSPECTION_STARTED
+  TANK_QI_INSPECTION_PASSED
+  TANK_QI_INSPECTION_FAILED
+  TANK_AVAILABLE_FOR_DELIVERY
+  TANK_BLOCKED
+  TANK_DISPATCHED
+  TANK_IMDG_TEST_SCHEDULED
+  TANK_IMDG_TEST_COMPLETED
+  TANK_IMDG_EXPIRING_SOON
+  FINDING_DETECTED
+  FINDING_SEVERITY_ESCALATED
+  REPAIR_REQUEST_SENT_TO_CLIENT
+  REPAIR_APPROVED_BY_CLIENT
+  REPAIR_REJECTED_BY_CLIENT
+  REPAIR_STARTED
+  REPAIR_COMPLETED
+  REPAIR_VERIFIED
+  CLIENT_REQUEST_CREATED
+  CLIENT_REQUEST_SENT
+  CLIENT_REQUEST_RESPONSE_RECEIVED
+  CLIENT_NO_RESPONSE_ALERT
+  BILLABLE_SERVICE_DETECTED
+  PREFACTURA_GENERATED
+  INVOICE_APPROVED
+  INVOICE_SENT_TO_CONTAPYME
+  INVOICE_PAID
+  DRIVER_BASC_VERIFIED
+  DRIVER_BASC_FLAGGED
+  DOCUMENT_RECEIVED
+  COMPLIANCE_AUDIT_RECORD
+  SLA_AT_RISK
+  SLA_BREACHED
+  OPERATOR_ASSIGNED
+  BAY_ASSIGNED
+  INSPECTION_AI_QUEUED
+  INSPECTION_AI_STARTED
+  INSPECTION_AI_COMPLETED
+  INSPECTION_AI_FAILED
+  INSPECTION_CERTIFICATION_REQUESTED
+}
+
+model AiInspectionRun {
+  id            String                @id @default(cuid())
+  inspectionId  String
+  inspection    Inspection            @relation(fields: [inspectionId], references: [id])
+  washOrderId   String
+  washOrder     WashOrder             @relation(fields: [washOrderId], references: [id])
+  requestedById String
+  requestedBy   User                  @relation("AiInspectionRequestedBy", fields: [requestedById], references: [id])
+  status        AiInspectionRunStatus @default(QUEUED)
+
+  provider       String            @default("openai")
+  model          String?
+  score          Int?
+  classification AiClassification?
+  summary        String?
+  findingsJson   Json?
+  risksJson      Json?
+  rawResponse    Json?
+  errorMessage   String?
+  evidenceCount  Int               @default(0)
+  attempts       Int               @default(0)
+  correlationId  String?
+  evidenceHash   String?
+
+  queuedAt   DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([inspectionId, createdAt])
+  @@index([washOrderId, createdAt])
+  @@map("ai_inspection_runs")
+}
+
+enum AiInspectionRunStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AiClassification {
+  APPROVED
+  MANUAL_REVIEW
+  REJECTED
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 10 — AGENTES IA (P1 — IA-First con HITL)
+// ─────────────────────────────────────────────────────────────────────
+
+model AgentAction {
+  id         String            @id @default(cuid())
+  agentType  AgentType
+  actionType String
+  reasoning  String // P10 — por qué el agente decidió esto
+  payload    Json
+  status     AgentActionStatus @default(PENDING_REVIEW)
+
+  requiresHuman   Boolean   @default(false)
+  approvedById    String?
+  approvedBy      User?     @relation("ActionApprovedBy", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  rejectedAt      DateTime?
+  rejectionReason String?
+
+  washOrderId String?
+  tankId      String?
+  findingId   String?
+
+  createdAt  DateTime  @default(now())
+  executedAt DateTime?
+
+  @@map("agent_actions")
+}
+
+model SystemQuestion {
+  id           String    @id @default(cuid())
+  agentType    AgentType
+  question     String
+  context      Json?
+  options      Json?
+  isResolved   Boolean   @default(false)
+  answer       String?
+  assignedToId String?
+  assignedTo   User?     @relation("QuestionAssignedTo", fields: [assignedToId], references: [id])
+  resolvedAt   DateTime?
+
+  washOrderId String?
+  tankId      String?
+  findingId   String?
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  @@map("system_questions")
+}
+
+enum AgentType {
+  PROGRAMADOR
+  COMERCIAL
+  CUMPLIMIENTO
+  HALLAZGOS
+  FACTURACION
+  INVENTARIO
+  OBSERVADOR
+}
+
+enum AgentActionStatus {
+  PENDING_REVIEW
+  APPROVED
+  EXECUTED
+  REJECTED
+  FAILED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// CAPA 11 — INVENTARIO (sellos, empaques, insumos)
+// ─────────────────────────────────────────────────────────────────────
+
+model InventoryItem {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  name         String
+  unit         String
+  currentStock Decimal  @db.Decimal(10, 2)
+  minStock     Decimal  @db.Decimal(10, 2)
+  reorderPoint Decimal  @db.Decimal(10, 2)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  movements InventoryMovement[]
+
+  @@map("inventory_items")
+}
+
+model InventoryMovement {
+  id          String            @id @default(cuid())
+  itemId      String
+  item        InventoryItem     @relation(fields: [itemId], references: [id])
+  type        StockMovementType
+  quantity    Decimal           @db.Decimal(10, 2)
+  reason      String?
+  washOrderId String?
+  createdById String?
+  createdAt   DateTime          @default(now())
+
+  @@map("inventory_movements")
+}
+
+enum StockMovementType {
+  IN
+  OUT
+  ADJUSTMENT
+  RESERVATION
+}
