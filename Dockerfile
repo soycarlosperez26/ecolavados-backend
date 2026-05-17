@@ -9,9 +9,11 @@ RUN npm ci
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Copy .env.example as .env so Prisma can access variables at build time
-COPY .env.example .env
-# Generate Prisma client (uses .env variables)
+# Create a dummy .env for build time (Prisma only needs this to generate client)
+# Real variables will be injected by Railway at runtime
+RUN echo 'DATABASE_URL="postgresql://dummy:dummy@localhost/dummy"' > .env && \
+    echo 'DIRECT_URL="postgresql://dummy:dummy@localhost/dummy"' >> .env
+# Generate Prisma client (no database validation needed)
 RUN npx prisma generate
 RUN npm run build
 
