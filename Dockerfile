@@ -1,24 +1,23 @@
 FROM node:20-alpine AS base
-RUN apk add --no-cache libc6-compat
+# openssl is required by Prisma on Alpine Linux
+RUN apk add --no-cache libc6-compat openssl
 WORKDIR /app
 
 FROM base AS deps
 COPY package*.json ./
 RUN npm ci
-ARG DATABASE_URL
-ARG DIRECT_URL
-ENV NODE_ENV=production
-ENV DATABASE_URL=$DATABASE_URL
-ENV DIRECT_URL=$DIRECT_URL
 
 FROM base AS builder
-# Declare Railway-injected variables for build time
+# Declare Railway build-time variables (Railway injects these automatically)
+ARG DATABASE_URL
+ARG DIRECT_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
 RUN npm run build
 
 FROM base AS runner
+ENV NODE_ENV=production
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
