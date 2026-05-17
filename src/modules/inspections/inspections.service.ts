@@ -1,30 +1,18 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { InjectQueue } from '@nestjs/bullmq';
 import {
   AiInspectionRunStatus,
   EventType,
   InspectionResult,
   InspectionStatus,
-  InspectionType,
-  Prisma,
-  UserRole,
   WashOrderStatus,
 } from '@prisma/client';
-import { Queue } from 'bullmq';
-import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsService } from '../events/events.service';
-import {
-  AI_INSPECTION_ANALYZE_JOB,
-  AI_INSPECTION_QUEUE,
-  AI_SUPPORTED_MIME_TYPES,
-} from '../ai/ai.constants';
 import { CreateInspectionDto } from './dto/create-inspection.dto';
 import { RequestAiAnalysisDto } from './dto/request-ai-analysis.dto';
 import { CertifyInspectionDto } from './dto/certify-inspection.dto';
@@ -33,10 +21,7 @@ import { CertifyInspectionDto } from './dto/certify-inspection.dto';
 export class InspectionsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService,
     private readonly eventsService: EventsService,
-    @InjectQueue(AI_INSPECTION_QUEUE)
-    private readonly aiInspectionQueue: Queue,
   ) {}
 
   async createForOrder(
@@ -123,135 +108,13 @@ export class InspectionsService {
   }
 
   async requestAiAnalysis(
-    inspectionId: string,
-    requestedById: string,
-    dto: RequestAiAnalysisDto,
+    _inspectionId: string,
+    _requestedById: string,
+    _dto: RequestAiAnalysisDto,
   ) {
-    const inspection = await this.prisma.inspection.findUnique({
-      where: { id: inspectionId },
-      include: {
-        washOrder: {
-          include: {
-            evidences: {
-              orderBy: { createdAt: 'asc' },
-            },
-          },
-        },
-        aiRuns: {
-          orderBy: { createdAt: 'desc' },
-        },
-      },
-    });
-
-    if (!inspection) {
-      throw new NotFoundException(`Inspection ${inspectionId} not found`);
-    }
-
-    if (!inspection.washOrderId || !inspection.washOrder) {
-      throw new BadRequestException(
-        'Inspection must be associated to a wash order',
-      );
-    }
-
-    this.assertOrderStatusAllowsAnalysis(inspection.washOrder.status);
-
-    const evidence = inspection.washOrder.evidences.filter((item) =>
-      item.mimeType ? AI_SUPPORTED_MIME_TYPES.includes(item.mimeType as any) : true,
+    throw new ServiceUnavailableException(
+      'AI analysis is not available in this deployment (Redis/BullMQ required)',
     );
-
-    const minImages = Number(this.config.get('AI_MIN_IMAGES_REQUIRED') ?? 3);
-    if (evidence.length < minImages) {
-      throw new BadRequestException(
-        `At least ${minImages} evidences are required to analyze this inspection`,
-      );
-    }
-
-    const activeStatuses: AiInspectionRunStatus[] = [
-      AiInspectionRunStatus.QUEUED,
-      AiInspectionRunStatus.PROCESSING,
-    ];
-    const activeRun = inspection.aiRuns.find((item) =>
-      activeStatuses.includes(item.status),
-    );
-
-    if (activeRun) {
-      throw new ConflictException(
-        `Inspection already has an active AI run (${activeRun.id})`,
-      );
-    }
-
-    const evidenceHash = this.buildEvidenceHash(evidence);
-    const latestCompletedRun = inspection.aiRuns.find(
-      (item) =>
-        item.status === AiInspectionRunStatus.COMPLETED &&
-        item.evidenceHash === evidenceHash,
-    );
-
-    if (latestCompletedRun && !dto.force) {
-      return {
-        inspectionId,
-        aiRunId: latestCompletedRun.id,
-        status: latestCompletedRun.status,
-        reused: true,
-      };
-    }
-
-    const correlationId = randomUUID();
-    const aiRun = await this.prisma.aiInspectionRun.create({
-      data: {
-        inspectionId,
-        washOrderId: inspection.washOrderId,
-        requestedById,
-        status: AiInspectionRunStatus.QUEUED,
-        model: this.config.get<string>('OPENAI_VISION_MODEL') || 'gpt-4.1-mini',
-        evidenceCount: evidence.length,
-        correlationId,
-        evidenceHash,
-      },
-    });
-
-    await this.prisma.washOrder.update({
-      where: { id: inspection.washOrderId },
-      data: {
-        status: WashOrderStatus.IA_REVIEW,
-      },
-    });
-
-    await this.eventsService.create({
-      type: EventType.INSPECTION_AI_QUEUED,
-      aggregateId: inspectionId,
-      aggregateType: 'inspection',
-      payload: { aiRunId: aiRun.id, evidenceCount: evidence.length },
-      metadata: { correlationId },
-      tankId: inspection.tankId,
-      washOrderId: inspection.washOrderId,
-      triggeredByUserId: requestedById,
-    });
-
-    const maxRetries = Number(this.config.get('AI_MAX_RETRIES') ?? 3);
-    const retryBackoff = Number(this.config.get('AI_RETRY_BACKOFF_MS') ?? 5000);
-
-    await this.aiInspectionQueue.add(
-      AI_INSPECTION_ANALYZE_JOB,
-      {
-        aiRunId: aiRun.id,
-        correlationId,
-      },
-      {
-        attempts: maxRetries,
-        backoff: {
-          type: 'exponential',
-          delay: retryBackoff,
-        },
-      },
-    );
-
-    return {
-      inspectionId,
-      aiRunId: aiRun.id,
-      status: aiRun.status,
-      reused: false,
-    };
   }
 
   async getAiAnalysisResult(inspectionId: string) {
@@ -365,40 +228,6 @@ export class InspectionsService {
       approved: dto.approved,
       orderStatus: nextOrderStatus,
     };
-  }
-
-  private buildEvidenceHash(
-    evidence: Array<{
-      id: string;
-      fileUrl: string;
-      hash?: string | null;
-      createdAt: Date;
-    }>,
-  ) {
-    const input = evidence
-      .map((item) => [item.id, item.hash ?? item.fileUrl, item.createdAt.toISOString()].join(':'))
-      .sort()
-      .join('|');
-
-    return createHash('sha256').update(input).digest('hex');
-  }
-
-  private assertOrderStatusAllowsAnalysis(status: WashOrderStatus) {
-    const allowedStatuses: WashOrderStatus[] = [
-      WashOrderStatus.IN_PROGRESS,
-      WashOrderStatus.PREPARATION,
-      WashOrderStatus.CLEANING,
-      WashOrderStatus.DRYING,
-      WashOrderStatus.PRE_INSPECTION,
-      WashOrderStatus.WAITING_QI,
-      WashOrderStatus.BLOCKED,
-    ];
-
-    if (!allowedStatuses.includes(status)) {
-      throw new BadRequestException(
-        `Cannot request AI analysis while wash order is ${status}`,
-      );
-    }
   }
 
   private async ensureUserExists(userId: string) {
