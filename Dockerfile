@@ -9,10 +9,7 @@ RUN npm ci
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Generate Prisma client without database connection (will validate at runtime)
-RUN DATABASE_URL="postgresql://dummy:dummy@localhost/dummy" \
-    DIRECT_URL="postgresql://dummy:dummy@localhost/dummy" \
-    npx prisma generate --skip-engine-check || true
+# Just compile, don't generate Prisma yet (will do it at runtime with real DB vars)
 RUN npm run build
 
 FROM base AS runner
