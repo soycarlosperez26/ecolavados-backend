@@ -115,24 +115,67 @@ En el panel de Railway puedes:
 
 ## Troubleshooting
 
-### Migraciones fallidas
-Si `prisma migrate deploy` falla:
+### ❌ Error: "Could not parse schema engine response: SyntaxError"
+**Causa:** Prisma intenta conectarse a la BD antes de que esté lista.
+
+**Solución:**
+- El archivo `docker-entrypoint.sh` ya maneja esto automáticamente con reintentos
+- Asegúrate de que las variables `DATABASE_URL` y `DIRECT_URL` están configuradas en Railway
+- Verifica que el servicio PostgreSQL esté vinculado al servicio Node.js
+
+**Si sigue fallando:**
 ```bash
-# Verifica el estado de migraciones
+# En los logs de Railway, busca:
+railway run npx prisma db push --skip-generate
 railway run npx prisma migrate status
 ```
 
+### Migraciones fallidas
+Si las migraciones falla después del entrypoint:
+```bash
+# Verifica el estado de migraciones
+railway run npx prisma migrate status
+
+# O usa db push (crea migraciones automáticamente)
+railway run npx prisma db push
+```
+
 ### Variables de entorno no cargadas
-- Asegúrate de que las variables están configuradas en el servicio Node.js
-- No uses `.env` en producción, configúralas en Railway UI
+**Síntomas:** Error de conexión a BD o Supabase no disponible
+
+**Solución:**
+- Verifica en Railway → Variable Explorer que todas las variables estén ahí
+- No uses `.env` en producción, configúralas SIEMPRE en Railway UI
+- Si cambias variables, re-deploy la aplicación
+
+**Variables críticas que DEBEN estar:**
+```
+DATABASE_URL        ← Generada automáticamente por Railway Postgres
+DIRECT_URL          ← Para migraciones (usa pooler:6543 para queries normales)
+SUPABASE_URL        ← Para almacenamiento de archivos
+SUPABASE_ANON_KEY   ← Para autenticación
+JWT_SECRET          ← Mínimo 32 caracteres
+```
 
 ### Puerto rechazado
 - Railway asigna el puerto automáticamente via `$PORT`
 - La aplicación ya está configurada para usarlo
+- Los logs deberían mostrar: `🚀 API running on port 3000`
 
 ### Base de datos no conecta
-- Vincula el servicio PostgreSQL al servicio Node.js
-- Espera a que Railway genere las variables automáticamente
+**Verificación:**
+1. ¿El servicio PostgreSQL está creado en Railway? (debería estar)
+2. ¿Está vinculado al servicio Node.js? (debe haber una línea de conexión)
+3. ¿Las variables `DATABASE_URL` y `DIRECT_URL` existen?
+
+**Solución:**
+```bash
+# En Railway, ejecuta:
+railway run psql $DATABASE_URL -c "SELECT 1"
+
+# Si devuelve error, la BD no está lista
+# Si devuelve (1), está conectada correctamente
+```
 
 ## Dominios Personalizados
 
