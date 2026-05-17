@@ -9,7 +9,11 @@ RUN npm ci
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Just compile, don't generate Prisma yet (will do it at runtime with real DB vars)
+# prisma generate only reads schema.prisma to generate TS types - does NOT connect to DB
+# Dummy URLs satisfy the env validation without any real connection
+RUN DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
+    DIRECT_URL="postgresql://dummy:dummy@localhost:5432/dummy" \
+    npx prisma generate
 RUN npm run build
 
 FROM base AS runner
@@ -23,5 +27,4 @@ RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 3000
 
-# Las variables de entorno se pasan en runtime por Railway
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

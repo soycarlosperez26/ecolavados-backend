@@ -1,10 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "🔨 Generando Prisma Client con variables reales..."
-npx prisma generate
-
-echo "📦 Sincronizando schema con la base de datos..."
+echo "📦 Aplicando migraciones..."
 npx prisma db push --skip-generate --accept-data-loss
 
 echo "🚀 Iniciando aplicación..."
