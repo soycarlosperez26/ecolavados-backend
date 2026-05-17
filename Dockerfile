@@ -14,9 +14,12 @@ RUN npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production
+ENV PORT=3000
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 
-EXPOSE 3001
-CMD ["node", "dist/main"]
+EXPOSE 3000
+
+# Run migrations and start the application
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
