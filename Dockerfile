@@ -8,14 +8,14 @@ RUN npm ci
 
 FROM base AS builder
 # Declare Railway-injected variables for build time
-ARG DATABASE_URL
-ARG DIRECT_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
 RUN npm run build
 
 FROM base AS runner
+ARG DATABASE_URL
+ARG DIRECT_URL
 ENV NODE_ENV=production
 ENV DATABASE_URL=$DATABASE_URL
 ENV DIRECT_URL=$DIRECT_URL
