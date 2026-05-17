@@ -68,35 +68,48 @@ AI_MIN_IMAGES_REQUIRED=3
    - Las variables `DATABASE_URL` y `DIRECT_URL` se generarán automáticamente
 
 ### 5. **Despliegue Automático**
-   - Railway automáticamente:
-     - Descarga el código
-     - Instala dependencias con `npm ci`
-     - Ejecuta las migraciones de Prisma (`prisma migrate deploy`)
-     - Compila el proyecto (`npm run build`)
-     - Inicia la aplicación
 
-## Dockerfile
+## 🔧 Cómo Funciona el Despliegue
 
-El Dockerfile ya está optimizado para Railway:
-
-```dockerfile
-# Multi-stage build para reducir tamaño
-- Base: Alpine Linux + Node.js 20
-- Deps: Instala dependencias
-- Builder: Compila el código y genera Prisma
-- Runner: Imagen final con solo lo necesario
+### Build Time (Railway construye la imagen Docker)
+```
+1. Descarga el código
+2. npm ci → Instala dependencias
+3. Copia .env.example como .env (para que Prisma lo lea en build time)
+4. npx prisma generate → Genera Prisma Client
+5. npm run build → Compila TypeScript a JavaScript
+6. ✅ Imagen Docker creada
 ```
 
-**Comandos ejecutados:**
-1. `npx prisma migrate deploy` - Aplica migraciones pendientes
-2. `node dist/src/main.js` - Inicia la aplicación
+### Runtime (Railway ejecuta el contenedor)
+```
+1. Railway inyecta automáticamente TODAS las variables de entorno
+   (DATABASE_URL, JWT_SECRET, SUPABASE_URL, etc.)
+2. docker-entrypoint.sh ejecuta:
+   - npx prisma migrate deploy → Aplica migraciones a la BD
+   - node dist/src/main.js → Inicia la aplicación
+3. ✅ API disponible en https://tu-dominio-railway.com
+```
 
-## Variables de Entorno Automáticas
+## 📦 Dockerfile Optimizado
 
-Railway proporciona automáticamente:
+El Dockerfile usa multi-stage build para reducir tamaño:
 
-- `PORT` - Puerto asignado dinámicamente (por defecto 3000)
-- `DATABASE_URL` - URL de conexión a Postgres
+- **base**: Alpine Linux + Node.js 20
+- **deps**: Instala dependencias con `npm ci`
+- **builder**: Compila código y genera Prisma Client
+- **runner**: Imagen final solo con lo necesario
+
+## 🔐 Cómo Railway Pasa Variables de Entorno
+
+**Las variables se inyectan AUTOMÁTICAMENTE en runtime:**
+
+1. En el panel Railway, vas a **Variables**
+2. Configuras: `DATABASE_URL`, `JWT_SECRET`, `SUPABASE_URL`, etc.
+3. Cuando Railway inicia el contenedor, inyecta todas las variables
+4. Tu aplicación accede via `process.env.VARIABLE_NAME`
+
+**⚠️ Importante:** Las variables en Railway se pasan al contenedor en tiempo de ejecución, NO en tiempo de build. Por eso copiamos `.env.example` durante el build (solo para que Prisma genere el Client), pero en runtime se usan las variables reales de Railway.
 
 ## Health Check
 

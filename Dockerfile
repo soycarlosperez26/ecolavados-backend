@@ -9,15 +9,14 @@ RUN npm ci
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Generate Prisma client without database validation (will validate at runtime)
-RUN DATABASE_URL="postgresql://dummy:dummy@localhost/dummy" \
-    DIRECT_URL="postgresql://dummy:dummy@localhost/dummy" \
-    npx prisma generate
+# Copy .env.example as .env so Prisma can access variables at build time
+COPY .env.example .env
+# Generate Prisma client (uses .env variables)
+RUN npx prisma generate
 RUN npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production
-ENV PORT=3000
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
@@ -27,4 +26,5 @@ RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 3000
 
+# Las variables de entorno se pasan en runtime por Railway
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
