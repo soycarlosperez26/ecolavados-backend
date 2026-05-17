@@ -17,6 +17,8 @@ RUN npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production
+ENV DATABASE_URL=$DATABASE_URL
+ENV DIRECT_URL=$DIRECT_URL
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
