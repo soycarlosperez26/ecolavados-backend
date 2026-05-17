@@ -1,3 +1,6 @@
+# ALTERNATIVA: Si el Dockerfile normal no funciona, usa este
+# Este utiliza 'prisma db push' en lugar de migraciones (mejor para Railway)
+
 FROM node:20-alpine AS base
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -9,10 +12,7 @@ RUN npm ci
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Generate Prisma client without database connection (will validate at runtime)
-RUN DATABASE_URL="postgresql://dummy:dummy@localhost/dummy" \
-    DIRECT_URL="postgresql://dummy:dummy@localhost/dummy" \
-    npx prisma generate --skip-engine-check || true
+# Build sin validación de BD (las variables reales vienen en runtime)
 RUN npm run build
 
 FROM base AS runner
@@ -26,5 +26,4 @@ RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 3000
 
-# Las variables de entorno se pasan en runtime por Railway
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
