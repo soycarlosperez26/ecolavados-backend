@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { WashOrdersService } from './wash-orders.service';
-import { WashOrdersController } from './wash-orders.controller';
+import { WashOrdersController, WashOrdersExternalController } from './wash-orders.controller';
 
 @Module({
-  controllers: [WashOrdersController],
+  controllers: [WashOrdersController, WashOrdersExternalController],
   providers: [WashOrdersService],
   exports: [WashOrdersService],
 })
