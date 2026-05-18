@@ -12,6 +12,7 @@ import { ApiTags, ApiBearerAuth, ApiQuery, ApiSecurity } from '@nestjs/swagger';
 import { WashOrderStatus, UserRole } from '@prisma/client';
 import { WashOrdersService } from './wash-orders.service';
 import { CreateWashOrderDto } from './dto/create-wash-order.dto';
+import { CreateWashOrderExternalDto } from './dto/create-wash-order-external.dto';
 import { UpdateWashOrderDto } from './dto/update-wash-order.dto';
 import { ChangeStatusDto } from './dto/change-status.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -69,8 +70,8 @@ export class WashOrdersExternalController {
   constructor(private readonly service: WashOrdersService) {}
 
   @Post()
-  create(@Body() dto: CreateWashOrderDto) {
-    return this.service.create(dto);
+  create(@Body() dto: CreateWashOrderExternalDto) {
+    return this.service.createFromExternal(dto);
   }
 
   @Patch(':id')

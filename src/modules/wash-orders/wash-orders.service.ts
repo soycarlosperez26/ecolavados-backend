@@ -6,10 +6,15 @@ import {
 import { WashOrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateWashOrderDto } from './dto/create-wash-order.dto';
+import { CreateWashOrderExternalDto } from './dto/create-wash-order-external.dto';
 import { UpdateWashOrderDto } from './dto/update-wash-order.dto';
 import { ChangeStatusDto } from './dto/change-status.dto';
 
 const STATUS_TRANSITIONS: Record<WashOrderStatus, WashOrderStatus[]> = {
+  NEEDS_REVIEW: [
+    WashOrderStatus.PENDING,
+    WashOrderStatus.CANCELLED,
+  ],
   PENDING: [
     WashOrderStatus.PENDING_APPROVAL,
     WashOrderStatus.SCHEDULED,
@@ -106,6 +111,14 @@ export class WashOrdersService {
     const orderNumber = await this.generateOrderNumber();
     return this.prisma.washOrder.create({
       data: { ...dto, orderNumber },
+      include: { client: true, tank: true, assignments: true },
+    });
+  }
+
+  async createFromExternal(dto: CreateWashOrderExternalDto) {
+    const orderNumber = await this.generateOrderNumber();
+    return this.prisma.washOrder.create({
+      data: { ...dto, orderNumber, status: WashOrderStatus.NEEDS_REVIEW },
       include: { client: true, tank: true, assignments: true },
     });
   }
