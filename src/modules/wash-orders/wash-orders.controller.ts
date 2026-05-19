@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Patch,
+  Delete,
   Param,
   Query,
   UseGuards,
@@ -15,10 +16,12 @@ import { CreateWashOrderDto } from './dto/create-wash-order.dto';
 import { CreateWashOrderExternalDto } from './dto/create-wash-order-external.dto';
 import { UpdateWashOrderDto } from './dto/update-wash-order.dto';
 import { ChangeStatusDto } from './dto/change-status.dto';
+import { UpdateSubStatusDto } from './dto/update-sub-status.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ApiKeyGuard } from '../auth/guards/api-key.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @ApiTags('Wash Orders')
 @ApiBearerAuth()
@@ -35,30 +38,51 @@ export class WashOrdersController {
 
   @Get()
   @ApiQuery({ name: 'status', enum: WashOrderStatus, required: false })
-  findAll(@Query('status') status?: WashOrderStatus) {
-    return this.service.findAll(status);
+  findAll(@CurrentUser() user: any, @Query('status') status?: WashOrderStatus) {
+    return this.service.findAll(user, status);
   }
 
   @Get('stats')
-  @Roles(UserRole.ADMIN, UserRole.COORDINATOR)
-  getStats() {
-    return this.service.getStats();
+  getStats(@CurrentUser() user: any) {
+    return this.service.getStats(user);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.findOne(id, user);
   }
 
   @Patch(':id')
-  @Roles(UserRole.ADMIN, UserRole.COORDINATOR)
-  update(@Param('id') id: string, @Body() dto: UpdateWashOrderDto) {
-    return this.service.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateWashOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.update(id, dto, user);
   }
 
   @Patch(':id/status')
-  changeStatus(@Param('id') id: string, @Body() dto: ChangeStatusDto) {
-    return this.service.changeStatus(id, dto);
+  changeStatus(
+    @Param('id') id: string,
+    @Body() dto: ChangeStatusDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.changeStatus(id, dto, user);
+  }
+
+  @Patch(':id/sub-status')
+  updateSubStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateSubStatusDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.updateSubStatus(id, dto.subStatus, user);
+  }
+
+  @Delete(':id')
+  @Roles(UserRole.ADMIN, UserRole.COORDINATOR)
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.remove(id, user);
   }
 }
 
@@ -76,6 +100,6 @@ export class WashOrdersExternalController {
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateWashOrderDto) {
-    return this.service.update(id, dto);
+    return this.service.update(id, dto, { sub: 'external', email: '', roles: ['ADMIN'] });
   }
 }

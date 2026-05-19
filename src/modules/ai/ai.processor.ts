@@ -152,7 +152,7 @@ export class AiProcessor extends WorkerHost {
         await tx.washOrder.update({
           where: { id: run.washOrderId },
           data: {
-            status: WashOrderStatus.PENDING_CERTIFICATION,
+            status: WashOrderStatus.IN_REVIEW,
           },
         });
 

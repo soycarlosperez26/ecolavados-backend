@@ -353,8 +353,9 @@ model WashOrder {
   id          String          @id @default(cuid())
   orderNumber String          @unique
   companyId   String?
-  status      WashOrderStatus @default(PENDING)
-  priority    Priority        @default(NORMAL)
+  status      WashOrderStatus    @default(APPROVED)
+  subStatus   WashOrderSubStatus?
+  priority    Priority           @default(NORMAL)
 
   tankId   String?
   tank     IsoTank? @relation(fields: [tankId], references: [id])
@@ -392,25 +393,22 @@ model WashOrder {
 
 enum WashOrderStatus {
   NEEDS_REVIEW
-  PENDING
-  PENDING_APPROVAL
-  REJECTED_PENDING_INFO
   APPROVED
-  SCHEDULED
+  REJECTED
   ASSIGNED
   IN_PROGRESS
+  IN_REVIEW
+  COMPLETED
+  CANCELLED
+}
+
+enum WashOrderSubStatus {
   PREPARATION
   CLEANING
   DRYING
   PRE_INSPECTION
-  IA_REVIEW
-  PENDING_CERTIFICATION
   PNEUMATIC_TEST
   WAITING_QI
-  COMPLETED
-  BLOCKED
-  REJECTED
-  CANCELLED
 }
 
 enum Priority {

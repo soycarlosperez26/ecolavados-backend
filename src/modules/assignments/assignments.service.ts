@@ -1,6 +1,5 @@
-// assignments.service.ts
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
-import { AssignmentRole } from '@prisma/client';
+import { Injectable, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { AssignmentRole, WashOrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -12,8 +11,17 @@ export class AssignmentsService {
       this.prisma.washOrder.findUnique({ where: { id: washOrderId } }),
       this.prisma.user.findUnique({ where: { id: userId } }),
     ]);
+
     if (!order) throw new NotFoundException('WashOrder not found');
     if (!user) throw new NotFoundException('User not found');
+
+    // Can only assign operators to orders in APPROVED or REJECTED (reactivation) state
+    const assignableStatuses = [WashOrderStatus.APPROVED, WashOrderStatus.REJECTED] as const;
+    if (!assignableStatuses.includes(order.status as typeof assignableStatuses[number])) {
+      throw new BadRequestException(
+        `Cannot assign an operator to an order in status ${order.status}. Order must be APPROVED or REJECTED.`,
+      );
+    }
 
     const existing = await this.prisma.washOrderAssignment.findUnique({
       where: { washOrderId_userId_role: { washOrderId, userId, role } },
@@ -27,12 +35,11 @@ export class AssignmentsService {
       },
     });
 
-    if (['PENDING', 'PENDING_APPROVAL', 'APPROVED', 'SCHEDULED'].includes(order.status)) {
-      await this.prisma.washOrder.update({
-        where: { id: washOrderId },
-        data: { status: 'ASSIGNED' },
-      });
-    }
+    // Move order to ASSIGNED status
+    await this.prisma.washOrder.update({
+      where: { id: washOrderId },
+      data: { status: WashOrderStatus.ASSIGNED },
+    });
 
     return assignment;
   }
@@ -43,8 +50,17 @@ export class AssignmentsService {
     });
     if (!existing) throw new NotFoundException('Assignment not found');
 
-    return this.prisma.washOrderAssignment.deleteMany({
-      where: { washOrderId, userId },
-    });
+    await this.prisma.washOrderAssignment.deleteMany({ where: { washOrderId, userId } });
+
+    // If no more assignments remain, revert order to APPROVED
+    const remaining = await this.prisma.washOrderAssignment.count({ where: { washOrderId } });
+    if (remaining === 0) {
+      await this.prisma.washOrder.update({
+        where: { id: washOrderId },
+        data: { status: WashOrderStatus.APPROVED },
+      });
+    }
+
+    return { message: 'Operator unassigned successfully' };
   }
 }

@@ -180,7 +180,7 @@ export class InspectionsService {
 
     const nextOrderStatus = dto.approved
       ? WashOrderStatus.COMPLETED
-      : WashOrderStatus.BLOCKED;
+      : WashOrderStatus.REJECTED;
 
     await this.prisma.$transaction(async (tx) => {
       await tx.inspection.update({

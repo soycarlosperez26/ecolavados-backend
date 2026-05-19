@@ -2,106 +2,50 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
-import { WashOrderStatus } from '@prisma/client';
+import { UserRole, WashOrderStatus, WashOrderSubStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateWashOrderDto } from './dto/create-wash-order.dto';
 import { CreateWashOrderExternalDto } from './dto/create-wash-order-external.dto';
 import { UpdateWashOrderDto } from './dto/update-wash-order.dto';
 import { ChangeStatusDto } from './dto/change-status.dto';
 
+export interface RequestUser {
+  sub: string;
+  email: string;
+  roles: string[];
+}
+
 const STATUS_TRANSITIONS: Record<WashOrderStatus, WashOrderStatus[]> = {
-  NEEDS_REVIEW: [
-    WashOrderStatus.PENDING,
-    WashOrderStatus.CANCELLED,
-  ],
-  PENDING: [
-    WashOrderStatus.PENDING_APPROVAL,
-    WashOrderStatus.SCHEDULED,
-    WashOrderStatus.ASSIGNED,
-    WashOrderStatus.REJECTED,
-    WashOrderStatus.CANCELLED,
-  ],
-  PENDING_APPROVAL: [
-    WashOrderStatus.APPROVED,
-    WashOrderStatus.REJECTED_PENDING_INFO,
-    WashOrderStatus.CANCELLED,
-  ],
-  REJECTED_PENDING_INFO: [
-    WashOrderStatus.PENDING_APPROVAL,
-    WashOrderStatus.CANCELLED,
-  ],
-  APPROVED: [
-    WashOrderStatus.SCHEDULED,
-    WashOrderStatus.ASSIGNED,
-    WashOrderStatus.CANCELLED,
-  ],
-  SCHEDULED: [WashOrderStatus.ASSIGNED, WashOrderStatus.CANCELLED],
-  ASSIGNED: [
-    WashOrderStatus.IN_PROGRESS,
-    WashOrderStatus.PREPARATION,
-    WashOrderStatus.REJECTED,
-    WashOrderStatus.CANCELLED,
-  ],
-  IN_PROGRESS: [
-    WashOrderStatus.PREPARATION,
-    WashOrderStatus.CLEANING,
-    WashOrderStatus.DRYING,
-    WashOrderStatus.PRE_INSPECTION,
-    WashOrderStatus.PNEUMATIC_TEST,
-    WashOrderStatus.WAITING_QI,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  PREPARATION: [
-    WashOrderStatus.CLEANING,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  CLEANING: [
-    WashOrderStatus.DRYING,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  DRYING: [
-    WashOrderStatus.PRE_INSPECTION,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  PRE_INSPECTION: [
-    WashOrderStatus.IA_REVIEW,
-    WashOrderStatus.PENDING_CERTIFICATION,
-    WashOrderStatus.WAITING_QI,
-    WashOrderStatus.BLOCKED,
-  ],
-  IA_REVIEW: [
-    WashOrderStatus.PENDING_CERTIFICATION,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  PENDING_CERTIFICATION: [
-    WashOrderStatus.COMPLETED,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  PNEUMATIC_TEST: [
-    WashOrderStatus.WAITING_QI,
-    WashOrderStatus.PRE_INSPECTION,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  WAITING_QI: [
-    WashOrderStatus.PRE_INSPECTION,
-    WashOrderStatus.PENDING_CERTIFICATION,
-    WashOrderStatus.COMPLETED,
-    WashOrderStatus.BLOCKED,
-    WashOrderStatus.REJECTED,
-  ],
-  COMPLETED: [],
-  BLOCKED: [WashOrderStatus.IN_PROGRESS, WashOrderStatus.REJECTED, WashOrderStatus.CANCELLED],
-  REJECTED: [],
-  CANCELLED: [],
+  NEEDS_REVIEW: [WashOrderStatus.APPROVED, WashOrderStatus.REJECTED, WashOrderStatus.CANCELLED],
+  APPROVED:     [WashOrderStatus.REJECTED, WashOrderStatus.CANCELLED],
+  REJECTED:     [WashOrderStatus.APPROVED, WashOrderStatus.ASSIGNED, WashOrderStatus.CANCELLED],
+  ASSIGNED:     [WashOrderStatus.IN_PROGRESS, WashOrderStatus.REJECTED, WashOrderStatus.CANCELLED],
+  IN_PROGRESS:  [WashOrderStatus.IN_REVIEW, WashOrderStatus.REJECTED],
+  IN_REVIEW:    [WashOrderStatus.COMPLETED, WashOrderStatus.REJECTED],
+  COMPLETED:    [],
+  CANCELLED:    [],
 };
+
+// Transitions that operators are allowed to trigger
+const OPERATOR_TRANSITIONS: Partial<Record<WashOrderStatus, WashOrderStatus[]>> = {
+  ASSIGNED:    [WashOrderStatus.IN_PROGRESS],
+  IN_PROGRESS: [WashOrderStatus.IN_REVIEW],
+};
+
+// Statuses where operators can edit order fields
+const OPERATOR_EDITABLE_STATUSES: WashOrderStatus[] = [
+  WashOrderStatus.ASSIGNED,
+  WashOrderStatus.IN_PROGRESS,
+  WashOrderStatus.IN_REVIEW,
+];
+
+const ADMIN_ROLES: string[] = [UserRole.ADMIN, UserRole.COORDINATOR];
+
+function isAdminOrCoordinator(user: RequestUser): boolean {
+  return user.roles.some((r) => ADMIN_ROLES.includes(r));
+}
 
 @Injectable()
 export class WashOrdersService {
@@ -110,7 +54,7 @@ export class WashOrdersService {
   async create(dto: CreateWashOrderDto) {
     const orderNumber = await this.generateOrderNumber();
     return this.prisma.washOrder.create({
-      data: { ...dto, orderNumber },
+      data: { ...dto, orderNumber, status: WashOrderStatus.APPROVED },
       include: { client: true, tank: true, assignments: true },
     });
   }
@@ -123,20 +67,27 @@ export class WashOrdersService {
     });
   }
 
-  async findAll(status?: WashOrderStatus) {
+  async findAll(user: RequestUser, status?: WashOrderStatus) {
+    if (isAdminOrCoordinator(user)) {
+      return this.prisma.washOrder.findMany({
+        where: status ? { status } : undefined,
+        include: { client: true, tank: true, assignments: true, evidences: true },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    // Operators only see orders assigned to them; NEEDS_REVIEW is never assigned
     return this.prisma.washOrder.findMany({
-      where: status ? { status } : undefined,
-      include: {
-        client: true,
-        tank: true,
-        assignments: true,
-        evidences: true,
+      where: {
+        status: status ?? { not: WashOrderStatus.NEEDS_REVIEW },
+        assignments: { some: { userId: user.sub } },
       },
+      include: { client: true, tank: true, assignments: true, evidences: true },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, user: RequestUser) {
     const order = await this.prisma.washOrder.findUnique({
       where: { id },
       include: {
@@ -144,19 +95,33 @@ export class WashOrdersService {
         tank: true,
         assignments: true,
         evidences: {
-          include: {
-            uploadedBy: { select: { id: true, fullName: true } },
-          },
+          include: { uploadedBy: { select: { id: true, fullName: true } } },
           orderBy: { createdAt: 'asc' },
         },
       },
     });
+
     if (!order) throw new NotFoundException(`WashOrder ${id} not found`);
+
+    if (!isAdminOrCoordinator(user)) {
+      const isAssigned = order.assignments.some((a) => a.userId === user.sub);
+      if (!isAssigned) throw new ForbiddenException('Access denied');
+    }
+
     return order;
   }
 
-  async update(id: string, dto: UpdateWashOrderDto) {
-    await this.findOne(id);
+  async update(id: string, dto: UpdateWashOrderDto, user: RequestUser) {
+    const order = await this.findOne(id, user);
+
+    if (!isAdminOrCoordinator(user)) {
+      if (!OPERATOR_EDITABLE_STATUSES.includes(order.status)) {
+        throw new ForbiddenException(
+          'You can only edit orders in ASSIGNED, IN_PROGRESS or IN_REVIEW status',
+        );
+      }
+    }
+
     return this.prisma.washOrder.update({
       where: { id },
       data: dto,
@@ -164,23 +129,40 @@ export class WashOrdersService {
     });
   }
 
-  async changeStatus(id: string, dto: ChangeStatusDto) {
-    const order = await this.findOne(id);
+  async changeStatus(id: string, dto: ChangeStatusDto, user: RequestUser) {
+    const order = await this.findOne(id, user);
     const allowed = STATUS_TRANSITIONS[order.status];
+
     if (!allowed.includes(dto.status)) {
       throw new BadRequestException(
         `Cannot transition from ${order.status} to ${dto.status}`,
       );
     }
 
-    const data: any = { status: dto.status };
-    if (dto.status === WashOrderStatus.IN_PROGRESS) data.startedAt = new Date();
-    if (dto.status === WashOrderStatus.COMPLETED) data.completedAt = new Date();
-    if (dto.status === WashOrderStatus.REJECTED) {
-      data.rejectedAt = new Date();
-      data.rejectionReason = dto.rejectionReason;
+    if (!isAdminOrCoordinator(user)) {
+      const operatorAllowed = OPERATOR_TRANSITIONS[order.status] ?? [];
+      if (!operatorAllowed.includes(dto.status)) {
+        throw new ForbiddenException(`Operators cannot set status to ${dto.status}`);
+      }
     }
-    if (dto.status === WashOrderStatus.REJECTED_PENDING_INFO) {
+
+    if (dto.status === WashOrderStatus.REJECTED && !dto.rejectionReason?.trim()) {
+      throw new BadRequestException('A rejection comment is required when rejecting an order');
+    }
+
+    const data: Record<string, unknown> = {
+      status: dto.status,
+      subStatus: null,
+    };
+
+    if (dto.status === WashOrderStatus.IN_PROGRESS) {
+      data.startedAt = order.startedAt ?? new Date();
+      data.subStatus = dto.subStatus ?? null;
+    }
+    if (dto.status === WashOrderStatus.COMPLETED) {
+      data.completedAt = new Date();
+    }
+    if (dto.status === WashOrderStatus.REJECTED) {
       data.rejectedAt = new Date();
       data.rejectionReason = dto.rejectionReason;
     }
@@ -188,15 +170,51 @@ export class WashOrdersService {
     return this.prisma.washOrder.update({ where: { id }, data });
   }
 
-  async getStats() {
-    const [total, pending, inProgress, completed, rejected] = await Promise.all([
-      this.prisma.washOrder.count(),
-      this.prisma.washOrder.count({ where: { status: 'PENDING' } }),
-      this.prisma.washOrder.count({ where: { status: 'IN_PROGRESS' } }),
-      this.prisma.washOrder.count({ where: { status: 'COMPLETED' } }),
-      this.prisma.washOrder.count({ where: { status: 'REJECTED' } }),
+  async updateSubStatus(id: string, subStatus: WashOrderSubStatus, user: RequestUser) {
+    const order = await this.findOne(id, user);
+
+    if (order.status !== WashOrderStatus.IN_PROGRESS) {
+      throw new BadRequestException('Sub-status can only be changed on IN_PROGRESS orders');
+    }
+
+    return this.prisma.washOrder.update({ where: { id }, data: { subStatus } });
+  }
+
+  async remove(id: string, user: RequestUser) {
+    if (!isAdminOrCoordinator(user)) {
+      throw new ForbiddenException('Only administrators can delete orders');
+    }
+
+    const order = await this.findOne(id, user);
+
+    if (order.status === WashOrderStatus.COMPLETED) {
+      throw new BadRequestException('Completed orders cannot be deleted');
+    }
+
+    return this.prisma.washOrder.delete({ where: { id } });
+  }
+
+  async getStats(user: RequestUser) {
+    const baseWhere = isAdminOrCoordinator(user)
+      ? {}
+      : { assignments: { some: { userId: user.sub } } };
+
+    const statuses: WashOrderStatus[] = [
+      'NEEDS_REVIEW', 'APPROVED', 'REJECTED', 'ASSIGNED',
+      'IN_PROGRESS', 'IN_REVIEW', 'COMPLETED', 'CANCELLED',
+    ];
+
+    const [total, ...counts] = await Promise.all([
+      this.prisma.washOrder.count({ where: baseWhere }),
+      ...statuses.map((status) =>
+        this.prisma.washOrder.count({ where: { ...baseWhere, status } }),
+      ),
     ]);
-    return { total, pending, inProgress, completed, rejected };
+
+    return statuses.reduce(
+      (acc, key, i) => ({ ...acc, [key.toLowerCase()]: counts[i] }),
+      { total } as Record<string, number>,
+    );
   }
 
   private async generateOrderNumber(): Promise<string> {
